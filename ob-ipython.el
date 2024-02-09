@@ -3,7 +3,7 @@
 ;; Author: Greg Sexton <gregsexton@gmail.com>
 ;; Keywords: literate programming, reproducible research
 ;; Homepage: http://www.gregsexton.org
-;; Package-Requires: ((s "1.9.0") (dash "2.10.0") (dash-functional "1.2.0") (f "0.17.2") (emacs "24"))
+;; Package-Requires: ((s "1.9.0") (dash "2.18.0") (f "0.17.2") (emacs "24.3"))
 
 ;; The MIT License (MIT)
 
@@ -36,12 +36,11 @@
 (require 'ob)
 (require 'ob-python)
 (require 'dash)
-(require 'dash-functional)
 (require 's)
 (require 'f)
 (require 'json)
 (require 'python)
-(require 'cl)
+(require 'cl-lib)
 
 ;; variables
 
@@ -63,6 +62,10 @@
 (defcustom ob-ipython-resources-dir "./obipy-resources/"
   "Directory where resources (e.g images) are stored so that they
 can be displayed.")
+
+(defcustom ob-ipython-suppress-execution-count nil
+  "If non-nil do not show the execution count in output."
+  :group 'ob-ipython)
 
 ;; utils
 
@@ -313,7 +316,7 @@ a new kernel will be started."
 
 (defun ob-ipython--maybe-run-async ()
   (when (not (ob-ipython--running-p))
-    (when-let (val (ob-ipython--dequeue 'ob-ipython--async-queue))
+    (-when-let (val (ob-ipython--dequeue 'ob-ipython--async-queue))
       (cl-destructuring-bind (code name callback args) val
         (ob-ipython--run-async code name callback args)))))
 
@@ -508,7 +511,6 @@ a new kernel will be started."
 ;; babel framework
 
 (add-to-list 'org-src-lang-modes '("ipython" . python))
-(add-hook 'org-mode-hook 'ob-ipython-auto-configure-kernels)
 
 (defvar ob-ipython-configured-kernels nil)
 
@@ -584,6 +586,7 @@ have previously been configured."
 (defun org-babel-execute:ipython (body params)
   "Execute a block of IPython code with Babel.
 This function is called by `org-babel-execute-src-block'."
+  (ob-ipython-auto-configure-kernels)
   (ob-ipython--clear-output-buffer)
   (if (cdr (assoc :async params))
       (ob-ipython--execute-async body params)
@@ -593,6 +596,7 @@ This function is called by `org-babel-execute-src-block'."
   (let* ((file (cdr (assoc :ipyfile params)))
          (session (cdr (assoc :session params)))
          (result-type (cdr (assoc :result-type params)))
+         (result-params (cdr (assoc :result-params params)))
          (sentinel (ipython--async-gen-sentinel)))
     (ob-ipython--create-kernel (ob-ipython--normalize-session session)
                                (cdr (assoc :kernel params)))
@@ -600,10 +604,11 @@ This function is called by `org-babel-execute-src-block'."
      (org-babel-expand-body:generic (encode-coding-string body 'utf-8)
                                     params (org-babel-variable-assignments:python params))
      (ob-ipython--normalize-session session)
-     (lambda (ret sentinel buffer file result-type)
-       (let ((replacement (ob-ipython--process-response ret file result-type)))
-         (ipython--async-replace-sentinel sentinel buffer replacement)))
-     (list sentinel (current-buffer) file result-type))
+     (lambda (ret sentinel buffer file result-type result-params)
+       (unless (member "silent" result-params)
+         (let ((replacement (ob-ipython--process-response ret file result-type)))
+           (ipython--async-replace-sentinel sentinel buffer replacement))))
+     (list sentinel (current-buffer) file result-type result-params))
     (format "%s - %s" (length ob-ipython--async-queue) sentinel)))
 
 (defun ob-ipython--execute-sync (body params)
@@ -626,7 +631,9 @@ This function is called by `org-babel-execute-src-block'."
         output
       (ob-ipython--output output nil)
       (s-concat
-       (format "# Out[%d]:\n" (cdr (assoc :exec-count ret)))
+       (if ob-ipython-suppress-execution-count
+           ""
+         (format "# Out[%d]:\n" (cdr (assoc :exec-count ret))))
        (s-join "\n" (->> (-map (-partial 'ob-ipython--render file)
                                (list (cdr (assoc :value result))
                                      (cdr (assoc :display result))))
@@ -656,7 +663,7 @@ This function is called by `org-babel-execute-src-block'."
                (let ((lines (s-lines value)))
                  (if (cdr lines)
                      (->> lines
-                          (-map 's-trim)
+                          (-map 's-trim-right)
                           (s-join "\n  ")
                           (s-concat "  ")
                           (format "#+BEGIN_EXAMPLE\n%s\n#+END_EXAMPLE"))
