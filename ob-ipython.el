@@ -637,7 +637,7 @@ This function is called by `org-babel-execute-src-block'."
        (s-join "\n" (->> (-map (-partial 'ob-ipython--render file)
                                (list (cdr (assoc :value result))
                                      (cdr (assoc :display result))))
-                         (remove-if-not nil)))))))
+                         (cl-remove-if-not nil)))))))
 
 (defun ob-ipython--render (file-or-nil values)
   (let ((org (lambda (value) value))
